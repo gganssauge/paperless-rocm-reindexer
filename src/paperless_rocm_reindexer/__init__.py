@@ -1,5 +1,6 @@
 """paperless-rocm-reindexer package."""
 
+from paperless_rocm_reindexer.config import Settings, get_settings
 from paperless_rocm_reindexer.engine import (
     DocumentResult,
     ReindexerEngine,
@@ -12,6 +13,8 @@ __all__ = [
     "DocumentResult",
     "ReindexerEngine",
     "ReindexWorkerPool",
+    "Settings",
     "StateStore",
     "__version__",
+    "get_settings",
 ]

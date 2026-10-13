@@ -14,6 +14,10 @@ dependencies = [
     "aiosqlite>=0.22.1",
 ]
 
+[project.scripts]
+paperless-rocm-reindexer = "paperless_rocm_reindexer.cli:app"
+reindex = "paperless_rocm_reindexer.cli:app"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.4",
