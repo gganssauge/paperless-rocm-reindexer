@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: paperless-rocm-reindexer
+  namespace: paperless
+  labels:
+    app.kubernetes.io/name: paperless-rocm-reindexer
+    app.kubernetes.io/part-of: paperless
+    app.kubernetes.io/component: reindexer-cron
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: paperless-rocm-reindexer
+            app.kubernetes.io/part-of: paperless
+            app.kubernetes.io/component: reindexer-cron
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            fsGroup: 10001
+          containers:
+            - name: reindexer
+              image: ghcr.io/gorki120/paperless-rocm-reindexer:latest
+              imagePullPolicy: IfNotPresent
+              args:
+                - "batch"
+                - "--limit"
+                - "25"
+              envFrom:
+                - configMapRef:
+                    name: paperless-rocm-reindexer-config
+                - secretRef:
+                    name: paperless-rocm-reindexer-secret
+              volumeMounts:
+                - name: paperless-media
+                  mountPath: /media
+                - name: reindexer-data
+                  mountPath: /data
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 1000m
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                capabilities:
+                  drop:
+                    - ALL
+          volumes:
+            - name: paperless-media
+              persistentVolumeClaim:
+                claimName: paperless-media
+            - name: reindexer-data
+              persistentVolumeClaim:
+                claimName: paperless-reindexer-data
