@@ -1,0 +1,111 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+    paths-ignore: &paths-ignore
+      - '**.md'
+      - 'docs/**'
+      - '.scratch/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.pre-commit-config.yaml'
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    branches:
+      - main
+    paths-ignore: *paths-ignore
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test-and-analyze:
+    name: Test & SonarCloud Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Install Python 3.12 & dependencies
+        run: |
+          uv python install 3.12
+          uv sync --dev
+
+      - name: Lint with Ruff
+        run: uv run ruff check .
+
+      - name: Check formatting with Ruff
+        run: uv run ruff format --check .
+
+      - name: Type checking
+        run: uv run ty check
+
+      - name: Run Pytest with Coverage
+        run: uv run pytest --cov=paperless_rocm_reindexer --cov-report=xml
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: SonarQube Quality Gate Check
+        uses: sonarsource/sonarqube-quality-gate-action@v1.2.1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Verify zero SonarCloud Issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          REPO="${{ github.repository }}"
+          echo "Checking SonarCloud annotations for commit: $COMMIT_SHA"
+
+          CHECK_RUN_ID=""
+          for i in {1..6}; do
+            CHECK_RUN_ID=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}/check-runs" --jq '.check_runs[] | select(.name=="SonarCloud Code Analysis") | .id' 2>/dev/null || true)
+            if [ -n "$CHECK_RUN_ID" ]; then
+              STATUS=$(gh api "repos/${REPO}/check-runs/${CHECK_RUN_ID}" --jq '.status' 2>/dev/null || true)
+              if [ "$STATUS" = "completed" ]; then
+                break
+              fi
+            fi
+            echo "Waiting for SonarCloud check-run to complete ($i/6)..."
+            sleep 5
+          done
+
+          if [ -z "$CHECK_RUN_ID" ]; then
+            echo "::warning::SonarCloud check-run not found or not completed."
+            exit 0
+          fi
+
+          ANNOTATIONS=$(gh api "repos/${REPO}/check-runs/${CHECK_RUN_ID}/annotations")
+          ISSUE_COUNT=$(echo "$ANNOTATIONS" | jq 'length')
+
+          if [ "$ISSUE_COUNT" -gt 0 ]; then
+            echo "::error::SonarCloud reported $ISSUE_COUNT issue(s)!"
+            echo "$ANNOTATIONS" | jq -r '.[] | "::error file=\(.path),line=\(.start_line)::[\(.path):\(.start_line)] SonarCloud [\(.annotation_level)]: \(.title)"'
+            exit 1
+          fi
+
+          echo "SonarCloud analysis clean: 0 issues found."
