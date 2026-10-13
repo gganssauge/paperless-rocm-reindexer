@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.10.6",
     "pydantic-settings>=2.7.1",
     "rich>=13.9.4",
+    "aiosqlite>=0.22.1",
 ]
 
 [dependency-groups]
