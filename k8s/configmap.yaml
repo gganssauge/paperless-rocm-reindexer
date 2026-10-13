@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: paperless-rocm-reindexer-config
+  namespace: paperless
+  labels:
+    app.kubernetes.io/name: paperless-rocm-reindexer
+    app.kubernetes.io/part-of: paperless
+    app.kubernetes.io/component: reindexer
+data:
+  PAPERLESS_BASE_URL: "http://paperless-ngx.paperless.svc.cluster.local:8000"
+  PAPERLESS_MEDIA_ROOT: "/media"
+  ROCM_OCR_BASE_URL: "http://rocm-ocr.ocr.svc.cluster.local:8000"
+  OCR_CONCURRENCY: "4"
+  BATCH_LIMIT: "0"
+  TAG_SUCCESS: "ocr:rocm-v4"
+  TAG_FAILURE: "ocr:failed"
+  DAEMON_INTERVAL_SEC: "60"
+  DRY_RUN: "false"
+  STATE_DB_PATH: "/data/reindexer_state.db"
