@@ -59,9 +59,9 @@ jobs:
           enable-cache: true
           version: "latest"
 
-      - name: Install Python 3.12 & dependencies
+      - name: Install Python 3.14 & dependencies
         run: |
-          uv python install 3.12
+          uv python install 3.14
           uv sync --dev
 
       - name: Lint with Ruff
