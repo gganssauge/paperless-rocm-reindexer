@@ -67,9 +67,9 @@ class ArchiveFileManager:
             algo_name = self.default_checksum_type
 
         if algo_name == "md5":
-            return hashlib.md5(data).hexdigest()
+            return hashlib.md5(data, usedforsecurity=False).hexdigest()
         elif algo_name == "sha256":
-            return hashlib.sha256(data).hexdigest()
+            return hashlib.sha256(data, usedforsecurity=False).hexdigest()
         else:
             raise ValueError(f"Unsupported checksum algorithm: {algo_name}")
 
