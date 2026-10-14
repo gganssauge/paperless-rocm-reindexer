@@ -304,11 +304,11 @@ class TestReindexerEngine:
         assert result.retried is True
         assert "OCR failed" in (result.error or "")
 
-        # Verify rocm concurrency was restored back to 4 despite failure
+        # Verify rocm concurrency was not ramped back up on failure (remains at isolated 1)
         last_concurrency_call = mock_rocm_client.set_concurrency.await_args_list[
             -1
         ].args[0]
-        assert last_concurrency_call == 4
+        assert last_concurrency_call == 1
 
         # Verify failure tag was applied on Paperless (tag 200 is ocr:failed, tag 100 removed)
         mock_paperless_client.patch_document.assert_awaited_once_with(
@@ -697,3 +697,53 @@ class TestReindexerEngine:
         with patch("asyncio.get_running_loop", return_value=fake_loop):
             engine.register_signal_handlers()
             engine.unregister_signal_handlers()
+
+    def test_engine_concurrency_capping(
+        self,
+        mock_paperless_client: AsyncMock,
+        mock_rocm_client: AsyncMock,
+        mock_db_adapter: AsyncMock,
+        file_manager: ArchiveFileManager,
+        state_store: StateStore,
+    ) -> None:
+        """Test engine clamps concurrency between 1 and 8."""
+        engine_high = ReindexerEngine(
+            paperless_client=mock_paperless_client,
+            rocm_client=mock_rocm_client,
+            db_adapter=mock_db_adapter,
+            file_manager=file_manager,
+            state_store=state_store,
+            concurrency=20,
+        )
+        assert engine_high.concurrency == 8
+
+        engine_low = ReindexerEngine(
+            paperless_client=mock_paperless_client,
+            rocm_client=mock_rocm_client,
+            db_adapter=mock_db_adapter,
+            file_manager=file_manager,
+            state_store=state_store,
+            concurrency=0,
+        )
+        assert engine_low.concurrency == 1
+
+    @pytest.mark.asyncio
+    async def test_extract_text_from_pdf_success(self) -> None:
+        """Test extract_text_from_pdf using a synthesized PDF."""
+        import io
+
+        import pypdf
+
+        from paperless_rocm_reindexer.models import extract_text_from_pdf
+
+        writer = pypdf.PdfWriter()
+        writer.add_blank_page(width=100, height=100)
+        buf = io.BytesIO()
+        writer.write(buf)
+        empty_pdf_bytes = buf.getvalue()
+
+        # Empty page returns None (falling back to headers)
+        assert extract_text_from_pdf(empty_pdf_bytes) is None
+
+        # Corrupt bytes return None gracefully
+        assert extract_text_from_pdf(b"not a valid pdf") is None

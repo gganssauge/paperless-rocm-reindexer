@@ -548,3 +548,80 @@ def test_daemon_iteration_error_tolerated(runner: CliRunner) -> None:
     assert "Error during daemon iteration #1: Temporary API drop" in result.stdout
     assert "Daemon polling iteration #2" in result.stdout
     assert "Daemon stopped" in result.stdout
+
+
+def test_batch_dry_run_with_save_scratch(runner: CliRunner, tmp_path: Path) -> None:
+    """Verify batch --dry-run --save-scratch exports sandwich PDFs to scratch dir."""
+    docs = [{"id": 42, "title": "Doc 42", "original_file_name": "doc42.pdf"}]
+    mock_pdf = b"%PDF-1.4 sandwich scratch test"
+
+    mock_p_client = AsyncMock()
+    mock_p_client.list_unprocessed_documents.return_value = docs
+    mock_p_client.download_original.return_value = b"%PDF-1.4 orig"
+
+    mock_r_client = AsyncMock()
+    mock_r_client.generate_sandwich.return_value = (mock_pdf, {"X-Page-Count": "1"})
+
+    scratch_dir = tmp_path / "scratch"
+
+    with (
+        patch("paperless_rocm_reindexer.cli.PaperlessClient") as p_cls,
+        patch("paperless_rocm_reindexer.cli.RocmOcrClient") as r_cls,
+    ):
+        p_cls.return_value.__aenter__.return_value = mock_p_client
+        r_cls.return_value.__aenter__.return_value = mock_r_client
+
+        result = runner.invoke(
+            app,
+            [
+                "batch",
+                "--dry-run",
+                "--save-scratch",
+                "--scratch-dir",
+                str(scratch_dir),
+            ],
+        )
+
+    assert result.exit_code == 0
+    saved_file = scratch_dir / "sandwich_test_42.pdf"
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == mock_pdf
+
+
+def test_inspect_with_save_scratch(runner: CliRunner, tmp_path: Path) -> None:
+    """Verify inspect --save-scratch exports sandwich PDF to scratch dir."""
+    mock_doc = {"id": 99, "title": "Doc 99", "content": "hello"}
+    mock_pdf = b"%PDF-1.4 sandwich inspect scratch"
+
+    mock_p_client = AsyncMock()
+    mock_p_client.get_document.return_value = mock_doc
+    mock_p_client.download_original.return_value = b"%PDF-1.4 orig"
+
+    mock_r_client = AsyncMock()
+    mock_r_client.generate_sandwich.return_value = (mock_pdf, {})
+
+    scratch_dir = tmp_path / "scratch"
+
+    with (
+        patch("paperless_rocm_reindexer.cli.PaperlessClient") as p_cls,
+        patch("paperless_rocm_reindexer.cli.RocmOcrClient") as r_cls,
+    ):
+        p_cls.return_value.__aenter__.return_value = mock_p_client
+        r_cls.return_value.__aenter__.return_value = mock_r_client
+
+        result = runner.invoke(
+            app,
+            [
+                "inspect",
+                "--doc-id",
+                "99",
+                "--save-scratch",
+                "--scratch-dir",
+                str(scratch_dir),
+            ],
+        )
+
+    assert result.exit_code == 0
+    saved_file = scratch_dir / "sandwich_test_99.pdf"
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == mock_pdf

@@ -72,8 +72,7 @@ class PaperlessClient:
         """
         response = await self._client.get(f"/api/documents/{document_id}/")
         self._handle_response_error(response, f"get_document({document_id})")
-        data: dict[str, Any] = response.json()
-        return data
+        return response.json()
 
     async def download_original(self, document_id: int) -> bytes:
         """Download pristine original binary file for a document.
@@ -118,8 +117,7 @@ class PaperlessClient:
             json=payload,
         )
         self._handle_response_error(response, f"patch_document({document_id})")
-        data: dict[str, Any] = response.json()
-        return data
+        return response.json()
 
     async def get_or_create_tag(self, tag_name: str) -> int:
         """Retrieve existing tag ID or create a new tag if not found.
@@ -135,74 +133,95 @@ class PaperlessClient:
             params={"name__iexact": tag_name},
         )
         self._handle_response_error(search_resp, f"search_tag({tag_name})")
-        search_data = search_resp.json()
-        results: list[dict[str, Any]] = search_data.get("results", [])
-
-        for tag in results:
+        for tag in search_resp.json().get("results", []):
             if tag.get("name", "").lower() == tag_name.lower():
-                tag_id: int = tag["id"]
-                return tag_id
+                return tag["id"]
 
         create_resp = await self._client.post(
             "/api/tags/",
             json={"name": tag_name},
         )
         self._handle_response_error(create_resp, f"create_tag({tag_name})")
-        create_data: dict[str, Any] = create_resp.json()
-        new_tag_id: int = create_data["id"]
-        return new_tag_id
+        return create_resp.json()["id"]
+
+    async def _resolve_tag_ids(self, tag_names: tuple[str, ...]) -> set[int]:
+        """Resolve numeric tag IDs for specified tag names."""
+        exclude_tag_ids: set[int] = set()
+        for name in tag_names:
+            if not name:
+                continue
+            resp = await self._client.get("/api/tags/", params={"name__iexact": name})
+            if not resp.is_error:
+                for tag in resp.json().get("results", []):
+                    if tag.get("name", "").lower() == name.lower():
+                        exclude_tag_ids.add(tag["id"])
+        return exclude_tag_ids
+
+    def _build_list_params(
+        self,
+        exclude_tag_ids: set[int],
+        server_filter: bool,
+    ) -> dict[str, Any]:
+        """Build query parameters including optional server-side tag exclusion."""
+        params: dict[str, Any] = {"page_size": 100}
+        if server_filter and exclude_tag_ids:
+            params["tags__id__none"] = ",".join(str(t) for t in sorted(exclude_tag_ids))
+        return params
+
+    def _filter_page_documents(
+        self,
+        docs: list[dict[str, Any]],
+        exclude_tag_ids: set[int],
+        limit: int,
+        documents: list[dict[str, Any]],
+    ) -> bool:
+        """Filter and collect documents, returning True if limit is reached."""
+        for doc in docs:
+            doc_tags = set(doc.get("tags", []))
+            if not (doc_tags & exclude_tag_ids):
+                documents.append(doc)
+                if 0 < limit <= len(documents):
+                    return True
+        return False
 
     async def list_unprocessed_documents(
         self,
         tag_exclude: str = "ocr:rocm-v4",
         tag_exclude_fail: str = "ocr:failed",
         limit: int = 0,
+        server_filter: bool = True,
     ) -> list[dict[str, Any]]:
         """List documents needing OCR processing, excluding processed/failed tags.
 
         Handles pagination transparently until limit is reached or all pages are read.
+        Supports server-side tag exclusion filtering via query params when available.
 
         Args:
             tag_exclude: Tag name marking successfully processed documents.
             tag_exclude_fail: Tag name marking failed documents.
             limit: Maximum number of documents to return (0 = all).
+            server_filter: If True, send tags__id__none filter parameter to Paperless API.
 
         Returns:
             List of document dictionaries.
         """
-        exclude_tag_ids: set[int] = set()
-
-        for tag_name in (tag_exclude, tag_exclude_fail):
-            if not tag_name:
-                continue
-            resp = await self._client.get(
-                "/api/tags/",
-                params={"name__iexact": tag_name},
-            )
-            if not resp.is_error:
-                data = resp.json()
-                for tag in data.get("results", []):
-                    if tag.get("name", "").lower() == tag_name.lower():
-                        exclude_tag_ids.add(tag["id"])
-
+        exclude_ids = await self._resolve_tag_ids((tag_exclude, tag_exclude_fail))
         documents: list[dict[str, Any]] = []
         url: str | None = "/api/documents/"
-        params: dict[str, Any] | None = {"page_size": 100}
+        params: dict[str, Any] | None = self._build_list_params(
+            exclude_ids, server_filter
+        )
 
         while url:
             response = await self._client.get(url, params=params)
             self._handle_response_error(response, "list_unprocessed_documents")
             data = response.json()
-            results: list[dict[str, Any]] = data.get("results", [])
-
-            for doc in results:
-                doc_tags = set(doc.get("tags", []))
-                if not (doc_tags & exclude_tag_ids):
-                    documents.append(doc)
-                    if 0 < limit <= len(documents):
-                        return documents
+            if self._filter_page_documents(
+                data.get("results", []), exclude_ids, limit, documents
+            ):
+                return documents
 
             url = data.get("next")
-            params = None  # URL contains next query parameters
+            params = None
 
         return documents

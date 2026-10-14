@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 from paperless_rocm_reindexer.exceptions import (
     OcrServiceUnavailableError,
 )
+from paperless_rocm_reindexer.models import (
+    SuccessRecord,
+    extract_text_from_pdf,
+    parse_ocr_headers,
+)
 
 if TYPE_CHECKING:
     from paperless_rocm_reindexer.clients.paperless import PaperlessClient
@@ -77,7 +82,7 @@ class ReindexerEngine:
             db_adapter: Adapter for Paperless PostgreSQL database.
             file_manager: Manager for local archive files.
             state_store: Local SQLite state tracker.
-            concurrency: Maximum concurrent document processing tasks.
+            concurrency: Maximum concurrent document processing tasks (clamped to 1..8).
             tag_success: Tag name applied upon successful OCR.
             tag_failure: Tag name applied upon permanent OCR failure.
             auto_setup_rocm: If True, configures initial concurrency on rocm-ocr service.
@@ -87,7 +92,7 @@ class ReindexerEngine:
         self.db_adapter = db_adapter
         self.file_manager = file_manager
         self.state_store = state_store
-        self.concurrency = max(1, concurrency)
+        self.concurrency = min(8, max(1, concurrency))
         self.tag_success = tag_success
         self.tag_failure = tag_failure
         self.auto_setup_rocm = auto_setup_rocm
@@ -194,17 +199,55 @@ class ReindexerEngine:
             self._tag_failure_id = tag_id
         return tag_id
 
+    async def _ramp_up_concurrency(self) -> None:
+        """Gradually ramp concurrency back up from 1 to self.concurrency in steps."""
+        if self.concurrency <= 1:
+            return
+        current = 1
+        step_size = max(1, self.concurrency // 2)
+        while current < self.concurrency:
+            current = min(self.concurrency, current + step_size)
+            try:
+                await self.rocm_client.set_concurrency(current)
+                logger.info("Ramped rocm-ocr concurrency up to %d", current)
+            except Exception as e:
+                logger.warning(
+                    "Failed ramping rocm-ocr concurrency to %d: %s", current, e
+                )
+                break
+
+    async def _execute_isolated_retry(
+        self, original_bytes: bytes, filename: str, doc_id: int
+    ) -> tuple[bytes, dict[str, str], bool]:
+        """Execute isolated OCR retry at concurrency 1, ramping up only on success."""
+        async with self._isolation_lock:
+            self._backoff_event.clear()
+            try:
+                try:
+                    await self.rocm_client.set_concurrency(1)
+                    logger.info(
+                        "Scaled rocm-ocr concurrency down to 1 for doc %d retry", doc_id
+                    )
+                except Exception as e:
+                    logger.warning("Failed to scale rocm-ocr concurrency to 1: %s", e)
+
+                logger.info("Retrying OCR in isolation for document %d", doc_id)
+                content, headers = await self.rocm_client.generate_sandwich(
+                    original_bytes, filename
+                )
+                logger.info("Isolated retry succeeded for document %d", doc_id)
+                await self._ramp_up_concurrency()
+                return content, headers, True
+            finally:
+                self._backoff_event.set()
+
     async def _execute_ocr_with_backoff(
         self,
         original_bytes: bytes,
         filename: str,
         doc_id: int,
     ) -> tuple[bytes, dict[str, str], bool]:
-        """Execute OCR request with 503 adaptive backoff retry.
-
-        Returns:
-            Tuple of (sandwich_pdf_bytes, headers_dict, retried_boolean).
-        """
+        """Execute OCR request with 503 adaptive backoff retry."""
         await self._backoff_event.wait()
         try:
             content, headers = await self.rocm_client.generate_sandwich(
@@ -217,121 +260,61 @@ class ReindexerEngine:
                 doc_id,
                 exc,
             )
+            return await self._execute_isolated_retry(original_bytes, filename, doc_id)
 
-        # 503 adaptive backoff: run retried document in isolation
-        async with self._isolation_lock:
-            self._backoff_event.clear()
-            try:
-                try:
-                    await self.rocm_client.set_concurrency(1)
-                    logger.info(
-                        "Scaled rocm-ocr concurrency down to 1 for document %d retry",
-                        doc_id,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to scale rocm-ocr concurrency to 1: %s", e)
-
-                logger.info("Retrying OCR in isolation for document %d", doc_id)
-                content, headers = await self.rocm_client.generate_sandwich(
-                    original_bytes, filename
-                )
-                logger.info("Isolated retry succeeded for document %d", doc_id)
-                return content, headers, True
-            finally:
-                try:
-                    await self.rocm_client.set_concurrency(self.concurrency)
-                    logger.info(
-                        "Restored rocm-ocr concurrency to %d after retry",
-                        self.concurrency,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to restore rocm-ocr concurrency: %s", e)
-                self._backoff_event.set()
-
-    async def _commit_success(
-        self,
-        doc_id: int,
-        title: str | None,
-        archive_filename: str,
-        sandwich_bytes: bytes,
-        old_checksum: str | None,
-        original_size_bytes: int,
-        headers: dict[str, str],
-        document: dict[str, Any],
-        retried: bool,
-    ) -> DocumentResult:
-        """Atomically persist sandwich PDF, update DB checksum, patch Paperless, and record success."""
-        # 1. Write sandwich PDF to disk atomically
-        self.file_manager.write_archive_file(archive_filename, sandwich_bytes)
-        archive_size_bytes = len(sandwich_bytes)
-
-        # 2. Update PostgreSQL archive_checksum
-        new_checksum = self.file_manager.calculate_checksum(
-            sandwich_bytes, existing_checksum=old_checksum
+    async def _update_archive_and_db(self, record: SuccessRecord) -> tuple[str, int]:
+        """Atomically persist sandwich PDF to disk and update database checksum."""
+        self.file_manager.write_archive_file(
+            record.archive_filename, record.sandwich_bytes
         )
-        await self.db_adapter.update_archive_checksum(doc_id, new_checksum)
+        archive_size = len(record.sandwich_bytes)
+        new_checksum = self.file_manager.calculate_checksum(
+            record.sandwich_bytes, existing_checksum=record.old_checksum
+        )
+        await self.db_adapter.update_archive_checksum(record.doc_id, new_checksum)
+        return new_checksum, archive_size
 
-        # 3. Patch Paperless document tags and fulltext content if available
+    async def _patch_paperless_success(self, record: SuccessRecord) -> None:
+        """Patch Paperless document with tags and fulltext content."""
         success_tag_id = await self._get_tag_id(self.tag_success)
         failure_tag_id = await self._get_tag_id(self.tag_failure)
 
-        existing_tags = set(document.get("tags") or [])
+        existing_tags = set(record.document.get("tags") or [])
         if failure_tag_id in existing_tags:
             existing_tags.remove(failure_tag_id)
         existing_tags.add(success_tag_id)
 
-        extracted_text = headers.get("X-Extracted-Text") or headers.get(
-            "x-extracted-text"
-        )
-
         await self.paperless_client.patch_document(
-            doc_id,
-            content=extracted_text,
+            record.doc_id,
+            content=record.metrics.extracted_text,
             tags=sorted(existing_tags),
         )
 
-        # 4. Extract metrics from headers
-        inference_time_ms = 0.0
-        for key in ("X-Inference-Time-Ms", "x-inference-time-ms"):
-            if key in headers:
-                try:
-                    inference_time_ms = float(headers[key])
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-        page_count = 1
-        for key in ("X-Page-Count", "x-page-count", "X-Total-Pages", "x-total-pages"):
-            if key in headers:
-                try:
-                    page_count = int(headers[key])
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-        # 5. Record success in StateStore
+    async def _commit_success(self, record: SuccessRecord) -> DocumentResult:
+        """Atomically commit successful OCR results across disk, DB, Paperless, and state."""
+        new_checksum, archive_size = await self._update_archive_and_db(record)
+        await self._patch_paperless_success(record)
         await self.state_store.record_success(
-            document_id=doc_id,
-            title=title,
-            page_count=page_count,
-            original_size_bytes=original_size_bytes,
-            archive_size_bytes=archive_size_bytes,
-            old_checksum=old_checksum,
+            document_id=record.doc_id,
+            title=record.title,
+            page_count=record.metrics.page_count,
+            original_size_bytes=record.original_size_bytes,
+            archive_size_bytes=archive_size,
+            old_checksum=record.old_checksum,
             new_checksum=new_checksum,
-            inference_time_ms=inference_time_ms,
+            inference_time_ms=record.metrics.inference_time_ms,
         )
-
         return DocumentResult(
-            document_id=doc_id,
+            document_id=record.doc_id,
             status="success",
-            title=title,
-            old_checksum=old_checksum,
+            title=record.title,
+            old_checksum=record.old_checksum,
             new_checksum=new_checksum,
-            original_size_bytes=original_size_bytes,
-            archive_size_bytes=archive_size_bytes,
-            page_count=page_count,
-            inference_time_ms=inference_time_ms,
-            retried=retried,
+            original_size_bytes=record.original_size_bytes,
+            archive_size_bytes=archive_size,
+            page_count=record.metrics.page_count,
+            inference_time_ms=record.metrics.inference_time_ms,
+            retried=record.retried,
         )
 
     async def _record_failure(
@@ -364,6 +347,62 @@ class ReindexerEngine:
         except Exception as e:
             logger.error("Failed patching failure tag for doc %d: %s", doc_id, e)
 
+    async def _fail_document(
+        self,
+        doc_id: int,
+        title: str | None,
+        document: dict[str, Any],
+        error_msg: str,
+        retried: bool = False,
+    ) -> DocumentResult:
+        """Log failure, update state store and Paperless tags, returning failed DocumentResult."""
+        logger.error(error_msg)
+        await self._record_failure(doc_id, title, error_msg, document)
+        return DocumentResult(
+            document_id=doc_id,
+            status="failed",
+            title=title,
+            error=error_msg,
+            retried=retried,
+        )
+
+    async def _resolve_archive_info(self, doc_id: int) -> tuple[str, str | None] | None:
+        """Fetch archive filename and old checksum from database."""
+        info = await self.db_adapter.get_document_archive_info(doc_id)
+        if info is None:
+            return None
+        filename, checksum = info
+        return (filename or f"{doc_id:07d}.pdf", checksum)
+
+    def _build_success_record(
+        self,
+        doc_id: int,
+        title: str | None,
+        archive_filename: str,
+        old_checksum: str | None,
+        orig_bytes: bytes,
+        sandwich_bytes: bytes,
+        headers: dict[str, str],
+        document: dict[str, Any],
+        retried: bool,
+    ) -> SuccessRecord:
+        """Construct SuccessRecord, prioritizing pypdf text layer over response headers."""
+        metrics = parse_ocr_headers(headers)
+        extracted = extract_text_from_pdf(sandwich_bytes) or metrics.extracted_text
+        metrics.extracted_text = extracted
+
+        return SuccessRecord(
+            doc_id=doc_id,
+            title=title,
+            archive_filename=archive_filename,
+            sandwich_bytes=sandwich_bytes,
+            old_checksum=old_checksum,
+            original_size_bytes=len(orig_bytes),
+            metrics=metrics,
+            document=document,
+            retried=retried,
+        )
+
     async def _process_document_internal(
         self, document: dict[str, Any]
     ) -> DocumentResult:
@@ -374,7 +413,6 @@ class ReindexerEngine:
         doc_id = int(document["id"])
         title = document.get("title")
 
-        # 1. Skip if already processed in state store
         if await self.state_store.is_processed(doc_id):
             logger.info("Document %d already processed/skipped, skipping", doc_id)
             return DocumentResult(
@@ -384,84 +422,60 @@ class ReindexerEngine:
                 error="Already processed in state store",
             )
 
-        # Record pending in state store
         await self.state_store.record_pending(doc_id, title=title)
-
-        # 2. Fetch document archive info from Paperless database
-        archive_info = await self.db_adapter.get_document_archive_info(doc_id)
+        archive_info = await self._resolve_archive_info(doc_id)
         if archive_info is None:
-            error_msg = f"Document {doc_id} not found in Paperless PostgreSQL database"
-            logger.error(error_msg)
-            await self._record_failure(doc_id, title, error_msg, document)
-            return DocumentResult(
-                document_id=doc_id,
-                status="failed",
-                title=title,
-                error=error_msg,
+            return await self._fail_document(
+                doc_id,
+                title,
+                document,
+                f"Document {doc_id} not found in Paperless PostgreSQL database",
             )
 
         archive_filename, old_checksum = archive_info
-        if not archive_filename:
-            archive_filename = f"{doc_id:07d}.pdf"
-
-        # 3. Download original document bytes
         try:
-            original_bytes = await self.paperless_client.download_original(doc_id)
+            orig_bytes = await self.paperless_client.download_original(doc_id)
         except Exception as exc:
-            error_msg = f"Failed to download original document {doc_id}: {exc}"
-            logger.error(error_msg)
-            await self._record_failure(doc_id, title, error_msg, document)
-            return DocumentResult(
-                document_id=doc_id,
-                status="failed",
-                title=title,
-                error=error_msg,
+            return await self._fail_document(
+                doc_id,
+                title,
+                document,
+                f"Failed to download original document {doc_id}: {exc}",
             )
 
-        original_size_bytes = len(original_bytes)
         filename = document.get("original_file_name") or f"doc_{doc_id}.pdf"
-
-        # 4. Perform OCR with adaptive backoff
         try:
             sandwich_bytes, headers, retried = await self._execute_ocr_with_backoff(
-                original_bytes, filename, doc_id
+                orig_bytes, filename, doc_id
             )
         except Exception as exc:
-            error_msg = f"OCR failed for document {doc_id}: {exc}"
-            logger.error(error_msg)
-            await self._record_failure(doc_id, title, error_msg, document)
-            return DocumentResult(
-                document_id=doc_id,
-                status="failed",
-                title=title,
-                error=error_msg,
+            return await self._fail_document(
+                doc_id,
+                title,
+                document,
+                f"OCR failed for document {doc_id}: {exc}",
                 retried=isinstance(exc, OcrServiceUnavailableError),
             )
 
-        # 5. On successful OCR, write file, update DB, patch Paperless, and record success
+        record = self._build_success_record(
+            doc_id=doc_id,
+            title=title,
+            archive_filename=archive_filename,
+            old_checksum=old_checksum,
+            orig_bytes=orig_bytes,
+            sandwich_bytes=sandwich_bytes,
+            headers=headers,
+            document=document,
+            retried=retried,
+        )
         try:
-            return await asyncio.shield(
-                self._commit_success(
-                    doc_id=doc_id,
-                    title=title,
-                    archive_filename=archive_filename,
-                    sandwich_bytes=sandwich_bytes,
-                    old_checksum=old_checksum,
-                    original_size_bytes=original_size_bytes,
-                    headers=headers,
-                    document=document,
-                    retried=retried,
-                )
-            )
+            return await asyncio.shield(self._commit_success(record))
         except Exception as exc:
-            error_msg = f"Failed committing OCR output for document {doc_id}: {exc}"
-            logger.error(error_msg)
-            await self._record_failure(doc_id, title, error_msg, document)
-            return DocumentResult(
-                document_id=doc_id,
-                status="failed",
-                title=title,
-                error=error_msg,
+            return await self._fail_document(
+                doc_id,
+                title,
+                document,
+                f"Failed committing OCR output for document {doc_id}: {exc}",
                 retried=retried,
             )
 

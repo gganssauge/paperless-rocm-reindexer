@@ -209,6 +209,37 @@ class TestPaperlessClient:
             assert len(docs) == 1
             assert docs[0]["id"] == 1
 
+    @pytest.mark.asyncio
+    async def test_list_unprocessed_documents_with_server_tag_filtering(self) -> None:
+        async with respx.mock(base_url=PAPERLESS_URL) as respx_mock:
+            respx_mock.get("/api/tags/").respond(
+                status_code=200,
+                json={"results": [{"id": 42, "name": "ocr:rocm-v4"}]},
+            )
+            route = respx_mock.get(
+                path="/api/documents/",
+                params={"page_size": "100", "tags__id__none": "42"},
+            ).respond(
+                status_code=200,
+                json={
+                    "next": None,
+                    "results": [
+                        {"id": 99, "title": "Unprocessed Doc", "tags": []},
+                    ],
+                },
+            )
+
+            async with PaperlessClient(PAPERLESS_URL, token="secret-token") as client:
+                docs = await client.list_unprocessed_documents(
+                    tag_exclude="ocr:rocm-v4",
+                    tag_exclude_fail="",
+                    server_filter=True,
+                )
+
+            assert route.called
+            assert len(docs) == 1
+            assert docs[0]["id"] == 99
+
 
 class TestRocmOcrClient:
     """Test suite for RocmOcrClient."""
@@ -326,3 +357,44 @@ class TestRocmOcrClient:
                 with pytest.raises(OcrServiceUnavailableError) as exc_info:
                     await client.set_concurrency(1)
                 assert exc_info.value.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_set_concurrency_clamping(self) -> None:
+        async with respx.mock(base_url=ROCM_URL) as respx_mock:
+            route = respx_mock.post("/ocr/v1/setup").respond(
+                status_code=200,
+                json={"status": "updated", "concurrency": 8},
+            )
+
+            async with RocmOcrClient(ROCM_URL) as client:
+                # Concurrency 16 should be clamped to 8
+                await client.set_concurrency(16)
+                assert route.calls.last.request.content == b'{"concurrency":8}'
+
+                # Concurrency 0 should be clamped to 1
+                await client.set_concurrency(0)
+                assert route.calls.last.request.content == b'{"concurrency":1}'
+
+    @pytest.mark.asyncio
+    async def test_get_setup_success(self) -> None:
+        async with respx.mock(base_url=ROCM_URL) as respx_mock:
+            respx_mock.get("/ocr/v1/setup").respond(
+                status_code=200,
+                json={"concurrency": 4, "active_tasks": 0, "device": "cuda:0"},
+            )
+
+            async with RocmOcrClient(ROCM_URL) as client:
+                setup_data = await client.get_setup()
+
+            assert setup_data["concurrency"] == 4
+            assert setup_data["device"] == "cuda:0"
+
+    @pytest.mark.asyncio
+    async def test_get_setup_fallback_on_404_or_405(self) -> None:
+        async with respx.mock(base_url=ROCM_URL) as respx_mock:
+            respx_mock.get("/ocr/v1/setup").respond(status_code=405)
+
+            async with RocmOcrClient(ROCM_URL) as client:
+                setup_data = await client.get_setup()
+
+            assert setup_data == {}

@@ -1,5 +1,4 @@
 import hashlib
-import os
 from pathlib import Path
 
 import pytest
@@ -96,10 +95,10 @@ def test_write_archive_file_cleanup_on_error(
     rel_path = "doc-err.pdf"
     content = b"content"
 
-    def faulty_replace(src, dst):
+    def faulty_replace(self, target):
         raise OSError("Disk failure during replace")
 
-    monkeypatch.setattr(os, "replace", faulty_replace)
+    monkeypatch.setattr(Path, "replace", faulty_replace)
 
     with pytest.raises(OSError, match="Disk failure during replace"):
         manager.write_archive_file(rel_path, content)
@@ -114,7 +113,16 @@ def test_write_archive_file_permissions(tmp_path: Path):
     rel_path = "perm-doc.pdf"
     content = b"data"
 
-    target_path = manager.write_archive_file(rel_path, content, file_mode=0o644)
+    # Default file_mode should be 0o644
+    target_path = manager.write_archive_file(rel_path, content)
     assert target_path.exists()
     mode = target_path.stat().st_mode & 0o777
     assert mode == 0o644
+
+    # Explicit file_mode override
+    rel_path_custom = "perm-doc-custom.pdf"
+    target_custom = manager.write_archive_file(
+        rel_path_custom, content, file_mode=0o600
+    )
+    assert target_custom.exists()
+    assert (target_custom.stat().st_mode & 0o777) == 0o600

@@ -101,19 +101,31 @@ class RocmOcrClient:
 
         return response.content, headers
 
+    async def get_setup(self) -> dict[str, Any]:
+        """Query current setup configuration from rocm-ocr engine.
+
+        Returns:
+            Setup dictionary, or empty dict if not supported / method not allowed.
+        """
+        response = await self._client.get("/ocr/v1/setup")
+        if response.status_code in (404, 405):
+            return {}
+        self._handle_response_error(response, "get_setup()")
+        return response.json()
+
     async def set_concurrency(self, target_concurrency: int) -> dict[str, Any]:
         """Dynamically adjust concurrency capacity of rocm-ocr engine.
 
         Args:
-            target_concurrency: Desired concurrency slot count (>= 1).
+            target_concurrency: Desired concurrency slot count (clamped to 1..8).
 
         Returns:
             Setup response payload dictionary.
         """
+        clamped = min(8, max(1, target_concurrency))
         response = await self._client.post(
             "/ocr/v1/setup",
-            json={"concurrency": target_concurrency},
+            json={"concurrency": clamped},
         )
-        self._handle_response_error(response, f"set_concurrency({target_concurrency})")
-        data: dict[str, Any] = response.json()
-        return data
+        self._handle_response_error(response, f"set_concurrency({clamped})")
+        return response.json()

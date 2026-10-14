@@ -1,7 +1,6 @@
 """Storage and file operations for Paperless documents."""
 
 import hashlib
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -13,15 +12,18 @@ class ArchiveFileManager:
         self,
         media_root: str | Path,
         default_checksum_type: Literal["md5", "sha256"] = "md5",
+        default_file_mode: int | None = 0o644,
     ) -> None:
         """Initialize ArchiveFileManager.
 
         Args:
             media_root: Path to Paperless media root directory.
             default_checksum_type: Default checksum algorithm ('md5' or 'sha256').
+            default_file_mode: Default file permissions mode (0o644).
         """
         self.media_root = Path(media_root)
         self.default_checksum_type = default_checksum_type
+        self.default_file_mode = default_file_mode
 
     def get_archive_path(self, archive_filename: str) -> Path:
         """Resolve archive file path under {media_root}/documents/archive/{archive_filename}.
@@ -76,17 +78,17 @@ class ArchiveFileManager:
         self,
         archive_filename: str,
         content: bytes,
-        file_mode: int | None = None,
+        file_mode: int | None = 0o644,
     ) -> Path:
         """Atomically write binary sandwich PDF to archive file path.
 
-        Writes to sibling temporary file `{path}.tmp` and replaces atomically with `os.replace`.
+        Writes to sibling temporary file `{path}.tmp` and replaces atomically with `temp_path.replace`.
         Ensures parent directory exists and cleans up temporary file on failure.
 
         Args:
             archive_filename: Relative archive filename.
             content: Binary PDF content.
-            file_mode: Optional file permissions mode (e.g. 0o644).
+            file_mode: Optional file permissions mode (defaults to 0o644).
 
         Returns:
             Path to written archive file.
@@ -95,16 +97,12 @@ class ArchiveFileManager:
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         temp_path = target_path.with_name(f"{target_path.name}.tmp")
+        effective_mode = file_mode if file_mode is not None else self.default_file_mode
         try:
-            with open(temp_path, "wb") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-
-            if file_mode is not None:
-                os.chmod(temp_path, file_mode)
-
-            os.replace(temp_path, target_path)
+            temp_path.write_bytes(content)
+            if effective_mode is not None:
+                temp_path.chmod(effective_mode)
+            temp_path.replace(target_path)
             return target_path
         except Exception:
             if temp_path.exists():
