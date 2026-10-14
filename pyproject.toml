@@ -41,9 +41,14 @@ build-backend = "hatchling.build"
 packages = ["src/paperless_rocm_reindexer"]
 
 [tool.pytest.ini_options]
+minversion = "6"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+log_level = "INFO"
+xfail_strict = true
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 relative_files = true
@@ -52,9 +57,22 @@ source = ["paperless_rocm_reindexer"]
 [tool.coverage.report]
 show_missing = true
 
+[tool.ty]
+
+[tool.repo-review]
+ignore = [
+    "GH200",  # Maintained by Dependabot (Renovate is used instead)
+    "PC140",  # Uses a type checker (managed via local ty hook)
+    "PC160",  # Uses a spell checker
+    "PC170",  # Uses PyGrep hooks (no rST files)
+    "PC901", "PC902", "PC903",  # Pre-commit CI messages (GitHub Actions CI is used)
+    "PY007",  # Task runner (nox/tox/pixi; uv is used directly)
+    "RF101",  # Flake8-bugbear B checks (conflicts with Typer function call defaults)
+    "SEC001", # zizmor GHA checker
+]
+
 [tool.ruff]
 line-length = 88
-target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "C901"]
