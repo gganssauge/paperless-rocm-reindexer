@@ -1,6 +1,4 @@
-"""Asynchronous HTTP client for Paperless-ngx REST API."""
-
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
@@ -8,6 +6,8 @@ from paperless_rocm_reindexer.exceptions import (
     DocumentNotFoundError,
     PaperlessApiError,
 )
+
+TAGS_ENDPOINT: Final[str] = "/api/tags/"
 
 
 class PaperlessClient:
@@ -129,7 +129,7 @@ class PaperlessClient:
             Tag ID integer.
         """
         search_resp = await self._client.get(
-            "/api/tags/",
+            TAGS_ENDPOINT,
             params={"name__iexact": tag_name},
         )
         self._handle_response_error(search_resp, f"search_tag({tag_name})")
@@ -138,7 +138,7 @@ class PaperlessClient:
                 return tag["id"]
 
         create_resp = await self._client.post(
-            "/api/tags/",
+            TAGS_ENDPOINT,
             json={"name": tag_name},
         )
         self._handle_response_error(create_resp, f"create_tag({tag_name})")
@@ -150,7 +150,7 @@ class PaperlessClient:
         for name in tag_names:
             if not name:
                 continue
-            resp = await self._client.get("/api/tags/", params={"name__iexact": name})
+            resp = await self._client.get(TAGS_ENDPOINT, params={"name__iexact": name})
             if not resp.is_error:
                 for tag in resp.json().get("results", []):
                     if tag.get("name", "").lower() == name.lower():

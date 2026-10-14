@@ -322,7 +322,7 @@ def test_batch_normal_run(runner: CliRunner) -> None:
     mock_engine = MagicMock()
     mock_engine.__aenter__ = AsyncMock(return_value=mock_engine)
     mock_engine.__aexit__ = AsyncMock(return_value=None)
-    mock_engine.close = AsyncMock()
+    mock_engine.close = MagicMock()
     mock_engine.process_batch = AsyncMock(side_effect=mock_process_batch)
 
     with (

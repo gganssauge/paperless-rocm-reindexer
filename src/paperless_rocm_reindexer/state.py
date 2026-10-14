@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import aiosqlite
+
+IN_MEMORY_DB: Final[str] = ":memory:"
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS reindex_log (
@@ -31,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_reindex_status ON reindex_log(status);
 class StateStore:
     """Persistent state tracking to avoid duplicate processing and allow resume."""
 
-    def __init__(self, db_path: str | Path = ":memory:") -> None:
+    def __init__(self, db_path: str | Path = IN_MEMORY_DB) -> None:
         self.db_path = str(db_path)
         self._db: aiosqlite.Connection | None = None
 
@@ -40,14 +42,14 @@ class StateStore:
         if self._db is not None:
             return
 
-        if self.db_path != ":memory:":
+        if self.db_path != IN_MEMORY_DB:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
 
         # Set WAL journal mode (note: in-memory DBs ignore or return memory for WAL)
-        if self.db_path != ":memory:":
+        if self.db_path != IN_MEMORY_DB:
             await self._db.execute("PRAGMA journal_mode=WAL;")
 
         await self._db.execute(CREATE_TABLE_SQL)

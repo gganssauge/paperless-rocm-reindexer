@@ -134,7 +134,7 @@ class ReindexerEngine:
 
         self._initialized = True
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """Clean up engine resources and unregister signal handlers."""
         self.unregister_signal_handlers()
         self._stopping = True
@@ -152,7 +152,7 @@ class ReindexerEngine:
         exc_tb: Any,
     ) -> None:
         """Exit async context and close resources."""
-        await self.close()
+        self.close()
 
     def stop(self) -> None:
         """Signal the engine to stop taking new work and drain in-flight workers."""
@@ -169,7 +169,7 @@ class ReindexerEngine:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, self.stop)
-            except (NotImplementedError, RuntimeError):
+            except RuntimeError:
                 pass
 
     def unregister_signal_handlers(self) -> None:
@@ -182,7 +182,7 @@ class ReindexerEngine:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.remove_signal_handler(sig)
-            except (NotImplementedError, RuntimeError):
+            except RuntimeError:
                 pass
 
     async def _get_tag_id(self, tag_name: str) -> int:
@@ -280,8 +280,7 @@ class ReindexerEngine:
         failure_tag_id = await self._get_tag_id(self.tag_failure)
 
         existing_tags = set(record.document.get("tags") or [])
-        if failure_tag_id in existing_tags:
-            existing_tags.remove(failure_tag_id)
+        existing_tags.discard(failure_tag_id)
         existing_tags.add(success_tag_id)
 
         await self.paperless_client.patch_document(
@@ -329,23 +328,22 @@ class ReindexerEngine:
             await self.state_store.record_failure(
                 doc_id, error_message=error_msg, title=title
             )
-        except Exception as e:
-            logger.error("Failed recording failure state for doc %d: %s", doc_id, e)
+        except Exception:
+            logger.exception("Failed recording failure state for doc %d", doc_id)
 
         try:
             failure_tag_id = await self._get_tag_id(self.tag_failure)
             success_tag_id = await self._get_tag_id(self.tag_success)
 
             existing_tags = set(document.get("tags") or [])
-            if success_tag_id in existing_tags:
-                existing_tags.remove(success_tag_id)
+            existing_tags.discard(success_tag_id)
             existing_tags.add(failure_tag_id)
 
             await self.paperless_client.patch_document(
                 doc_id, tags=sorted(existing_tags)
             )
-        except Exception as e:
-            logger.error("Failed patching failure tag for doc %d: %s", doc_id, e)
+        except Exception:
+            logger.exception("Failed patching failure tag for doc %d", doc_id)
 
     async def _fail_document(
         self,
@@ -490,6 +488,39 @@ class ReindexerEngine:
         async with self._semaphore:
             return await self._process_document_internal(document)
 
+    @staticmethod
+    def _dispatch_progress(
+        on_progress: Callable[[DocumentResult], Any] | None,
+        res: DocumentResult,
+    ) -> None:
+        """Safely invoke progress callback without failing the worker."""
+        if on_progress is None:
+            return
+        try:
+            on_progress(res)
+        except Exception:
+            logger.exception("Error in on_progress callback")
+
+    async def _run_batch_worker(
+        self,
+        queue: asyncio.Queue[tuple[int, dict[str, Any]]],
+        results: list[DocumentResult | None],
+        on_progress: Callable[[DocumentResult], Any] | None,
+    ) -> None:
+        """Worker loop consuming items from the queue."""
+        while not self._stopping:
+            try:
+                idx, doc = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            try:
+                res = await self.process_document(doc)
+                results[idx] = res
+                self._dispatch_progress(on_progress, res)
+            finally:
+                queue.task_done()
+
     async def process_batch(
         self,
         documents: list[dict[str, Any]],
@@ -513,25 +544,10 @@ class ReindexerEngine:
         results: list[DocumentResult | None] = [None] * len(documents)
         worker_count = min(self.concurrency, len(documents))
 
-        async def worker() -> None:
-            while not self._stopping:
-                try:
-                    idx, doc = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-
-                try:
-                    res = await self.process_document(doc)
-                    results[idx] = res
-                    if on_progress is not None:
-                        try:
-                            on_progress(res)
-                        except Exception:
-                            logger.exception("Error in on_progress callback")
-                finally:
-                    queue.task_done()
-
-        tasks = [asyncio.create_task(worker()) for _ in range(worker_count)]
+        tasks = [
+            asyncio.create_task(self._run_batch_worker(queue, results, on_progress))
+            for _ in range(worker_count)
+        ]
         self._active_tasks.update(tasks)
         try:
             await asyncio.gather(*tasks)

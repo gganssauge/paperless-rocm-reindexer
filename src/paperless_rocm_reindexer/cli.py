@@ -7,6 +7,7 @@ import concurrent.futures
 import difflib
 import logging
 import signal
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -156,8 +157,8 @@ def display_benchmarks(
 
 
 def _save_scratch_pdf(doc_id: int, pdf_bytes: bytes, scratch_dir: Path | None) -> Path:
-    """Save sandwich PDF to scratch folder or default /tmp path."""
-    dest_dir = scratch_dir or Path("/tmp")
+    """Save sandwich PDF to scratch folder or default temp path."""
+    dest_dir = scratch_dir or Path(tempfile.gettempdir())
     dest_dir.mkdir(parents=True, exist_ok=True)
     out_path = dest_dir / f"sandwich_test_{doc_id}.pdf"
     out_path.write_bytes(pdf_bytes)
@@ -460,7 +461,9 @@ async def run_inspect(
 
         target_save = save_sandwich
         if not target_save and save_scratch:
-            target_save = (scratch_dir or Path("/tmp")) / f"sandwich_test_{doc_id}.pdf"
+            target_save = (
+                scratch_dir or Path(tempfile.gettempdir())
+            ) / f"sandwich_test_{doc_id}.pdf"
 
         if target_save:
             target_save.parent.mkdir(parents=True, exist_ok=True)
@@ -477,7 +480,7 @@ def _setup_daemon_signals(request_stop: Callable[[], None]) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, request_stop)
-            except (NotImplementedError, RuntimeError):
+            except RuntimeError:
                 pass
     except RuntimeError:
         pass

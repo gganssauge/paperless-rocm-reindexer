@@ -56,13 +56,12 @@ class ArchiveFileManager:
             Hexadecimal checksum string (lowercase).
         """
         algo_name = algorithm
-        if algo_name is None:
-            if existing_checksum is not None:
-                cleaned = existing_checksum.strip()
-                if len(cleaned) == 32:
-                    algo_name = "md5"
-                elif len(cleaned) == 64:
-                    algo_name = "sha256"
+        if algo_name is None and existing_checksum is not None:
+            cleaned = existing_checksum.strip()
+            if len(cleaned) == 32:
+                algo_name = "md5"
+            elif len(cleaned) == 64:
+                algo_name = "sha256"
 
         if algo_name is None:
             algo_name = self.default_checksum_type

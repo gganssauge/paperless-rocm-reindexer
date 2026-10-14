@@ -89,7 +89,7 @@ class RocmOcrClient:
         )
         self._handle_response_error(response, f"generate_sandwich({filename})")
 
-        headers = {k: v for k, v in response.headers.items()}
+        headers = dict(response.headers.items())
         # Ensure canonical casing and normalized aliases
         for k, v in list(headers.items()):
             canonical = "-".join(part.capitalize() for part in k.split("-"))
