@@ -3,6 +3,10 @@ name = "paperless-rocm-reindexer"
 version = "0.1.0"
 description = "Batch & Continuous Reindexing Engine for Paperless-ngx powered by rocm-ocr"
 readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Gottfried Ganßauge", email = "ganssauge@gmx.de" },
+]
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
