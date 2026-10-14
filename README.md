@@ -156,7 +156,7 @@ Before running `paperless-rocm-reindexer`, ensure you have:
 ### 1. Clone & Install with `uv`
 
 ```bash
-git clone https://github.com/gorki120/paperless-rocm-reindexer.git
+git clone https://github.com/gganssauge/paperless-rocm-reindexer.git
 cd paperless-rocm-reindexer
 
 # Install dependencies using uv
@@ -428,7 +428,7 @@ You can integrate `paperless-rocm-reindexer` directly into your existing Paperle
 ```yaml
 services:
   reindexer:
-    image: ghcr.io/gorki120/paperless-rocm-reindexer:latest
+    image: ghcr.io/gganssauge/paperless-rocm-reindexer:latest
     restart: unless-stopped
     command: ["daemon", "--interval-sec", "120"]
     environment:
