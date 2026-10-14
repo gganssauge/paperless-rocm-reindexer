@@ -1,0 +1,81 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "pep621": {
+    "enabled": true
+  },
+  "pre-commit": {
+    "enabled": true
+  },
+  "github-actions": {
+    "enabled": true,
+    "managerFilePatterns": [
+      "/^\\.github/workflows/.*\\.ya?ml$/"
+    ]
+  },
+  "dockerfile": {
+    "enabled": true
+  },
+  "kubernetes": {
+    "managerFilePatterns": [
+      "/^k8s/.*\\.ya?ml$/"
+    ]
+  },
+  "kustomize": {
+    "managerFilePatterns": [
+      "/^k8s/kustomization\\.ya?ml$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Automerge minor, patch, pin, and digest updates for all managers",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest"
+      ],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true,
+      "addLabels": [
+        "automerge"
+      ]
+    },
+    {
+      "description": "Require manual review for major updates across all managers",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false,
+      "addLabels": [
+        "dependencies",
+        "major-update"
+      ]
+    },
+    {
+      "description": "Do not pin Python version requirement (requires-python constraint managed manually)",
+      "matchPackageNames": [
+        "python"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group Pre-Commit hook updates",
+      "matchManagers": [
+        "pre-commit"
+      ],
+      "groupName": "pre-commit-hooks"
+    }
+  ]
+}
