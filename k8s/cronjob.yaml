@@ -27,7 +27,7 @@ spec:
             fsGroup: 10001
           containers:
             - name: reindexer
-              image: ghcr.io/gorki120/paperless-rocm-reindexer:latest
+              image: ghcr.io/gganssauge/paperless-rocm-reindexer:latest
               imagePullPolicy: IfNotPresent
               args:
                 - "batch"
