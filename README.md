@@ -71,23 +71,27 @@ The `rocm-ocr` microservice remains strictly domain-agnostic and stateless. `pap
 ```mermaid
 flowchart TD
     subgraph Storage ["Persistent Storage & DB"]
-        MediaArchive[("Paperless Media Archive\n/media/documents/archive")]
-        PG[("Paperless PostgreSQL\ntable: documents_document")]
+        MediaArchive[("Paperless Media Archive<br/>/media/documents/archive")]
+        PG[("Paperless PostgreSQL<br/>table: documents_document")]
     end
 
     subgraph Service ["paperless-rocm-reindexer"]
-        CLI["CLI / Daemon Engine\n(Typer / Asyncio)"]
-        StateDB[("Local State Store\nSQLite: reindex_state.db")]
+        CLI["CLI / Daemon Engine<br/>Typer / Asyncio"]
+        StateDB[("Local State Store<br/>SQLite: reindex_state.db")]
         ClientPaperless["Paperless REST Client"]
         ClientROCM["ROCm-OCR HTTP Client"]
     end
 
+    subgraph Paperless ["Paperless-ngx Core"]
+        PaperlessAPI["Paperless REST API"]
+    end
+
     subgraph OCR ["rocm-ocr Microservice"]
-        ROCMService["FastAPI Inference Engine\n(PP-OCRv4 / ROCm HIP)"]
+        ROCMService["FastAPI Inference Engine<br/>PP-OCRv4 / ROCm HIP"]
     end
 
     CLI -->|1. Query Docs & Tags| ClientPaperless
-    ClientPaperless -->|GET /api/documents/| PaperlessAPI["Paperless REST API"]
+    ClientPaperless -->|GET /api/documents/| PaperlessAPI
     PaperlessAPI -->|Stream Original| CLI
 
     CLI -->|2. POST /ocr/v1/sandwich| ClientROCM
@@ -96,7 +100,7 @@ flowchart TD
 
     CLI -->|3. Atomic PDF Write| MediaArchive
     CLI -->|4. UPDATE archive_checksum| PG
-    CLI -->|5. PATCH /api/documents/{id}/| ClientPaperless
+    CLI -->|5. PATCH /api/documents/:id/| ClientPaperless
     CLI -->|6. Log Checkpoint| StateDB
 ```
 
@@ -114,8 +118,8 @@ sequenceDiagram
     participant DB as Paperless Postgres
     participant S as SQLite State
 
-    R->>P_API: GET /api/documents/?tags__name__iexact!=ocr:rocm-v4
-    R->>P_API: GET /api/documents/{id}/download/?original=true
+    R->>P_API: GET /api/documents/ (filter unprocessed)
+    R->>P_API: GET /api/documents/:id/download/?original=true
     P_API-->>R: Pristine Original File (PDF / Image)
 
     R->>ROCM: POST /ocr/v1/sandwich (multipart file)
@@ -125,12 +129,13 @@ sequenceDiagram
     end
     ROCM-->>R: Binary Sandwich PDF + X-Headers
 
-    R->>FS: Atomic write to media/documents/archive/{archive_filename}
+    R->>FS: Atomic write to media/documents/archive/:archive_filename
     R->>R: Calculate new MD5 / SHA256 checksum
-    R->>DB: UPDATE documents_document SET archive_checksum = $hash WHERE id = $id
-    R->>P_API: PATCH /api/documents/{id}/ (content: $text, tags: [...tags, ocr:rocm-v4])
-    R->>S: INSERT / UPDATE reindex_log (status='success')
+    R->>DB: UPDATE documents_document SET archive_checksum = new_hash WHERE id = doc_id
+    R->>P_API: PATCH /api/documents/:id/ (update content and add ocr:rocm-v4 tag)
+    R->>S: Log status to reindex_log (status = success)
 ```
+
 
 ---
 

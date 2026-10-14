@@ -58,7 +58,7 @@ flowchart TD
 
     CLI -->|1. Overwrite PDF| MediaArchive
     CLI -->|2. UPDATE archive_checksum| PG
-    CLI -->|3. PATCH /api/documents/{id}/| ClientPaperless
+    CLI -->|3. PATCH /api/documents/:id/| ClientPaperless
     CLI -->|4. Log Checkpoint| StateDB
 ```
 
@@ -126,14 +126,14 @@ sequenceDiagram
     R->>P_API: GET /api/documents/?tags__name__iexact!=ocr:rocm-v4
     R->>P_API: GET /api/documents/{id}/download/?original=true
     P_API-->>R: Binary Original (PDF/Image)
-    
+
     R->>ROCM: POST /ocr/v1/sandwich (multipart file)
     alt HTTP 503 GPU OOM
         R->>ROCM: POST /ocr/v1/setup (concurrency=1)
         R->>ROCM: POST /ocr/v1/sandwich (retry)
     end
     ROCM-->>R: Binary Sandwich PDF + X-Headers
-    
+
     R->>FS: Write binary to media/documents/archive/{archive_filename}
     R->>R: Calculate SHA256 / MD5 checksum
     R->>DB: UPDATE documents_document SET archive_checksum = $hash WHERE id = $id
