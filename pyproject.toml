@@ -9,14 +9,14 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "httpx>=0.28.1",
-    "typer>=0.15.1",
-    "asyncpg>=0.30.0",
-    "pydantic>=2.10.6",
-    "pydantic-settings>=2.7.1",
-    "rich>=13.9.4",
-    "aiosqlite>=0.22.1",
-    "pypdf>=6.20.1",
+    "aiosqlite",
+    "asyncpg",
+    "httpx",
+    "pydantic",
+    "pydantic-settings",
+    "pypdf",
+    "rich",
+    "typer",
 ]
 
 [project.scripts]
@@ -25,12 +25,12 @@ reindex = "paperless_rocm_reindexer.cli:app"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3.4",
-    "pytest-asyncio>=0.25.3",
-    "pytest-cov>=6.0.0",
-    "respx>=0.22.0",
-    "ruff>=0.9.6",
-    "ty>=0.0.1a15",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "respx",
+    "ruff",
+    "ty",
 ]
 
 [build-system]
