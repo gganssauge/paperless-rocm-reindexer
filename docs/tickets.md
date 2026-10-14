@@ -8,13 +8,13 @@
 ## Ticket Overview
 
 - [x] **PRO-00:** Epic Planning & Architecture Alignment (Completed via Grilling)
-- [ ] **PRO-01:** Project Setup, Tooling & CI/CD Pipeline
-- [ ] **PRO-02:** Paperless-ngx & `rocm-ocr` API Clients
-- [ ] **PRO-03:** Local SQLite State Store & Checkpoint Manager
-- [ ] **PRO-04:** Storage Sync, Checksum Calculator & Postgres Database Adapter
-- [ ] **PRO-05:** Worker Engine, Dynamic Concurrency & Adaptive Backoff
-- [ ] **PRO-06:** Typer CLI & Dry-Run / Diff Inspection Suite
-- [ ] **PRO-07:** Containerization, Kubernetes Manifests & Pilot Run
+- [x] **PRO-01:** Project Setup, Tooling & CI/CD Pipeline
+- [x] **PRO-02:** Paperless-ngx & `rocm-ocr` API Clients
+- [x] **PRO-03:** Local SQLite State Store & Checkpoint Manager
+- [x] **PRO-04:** Storage Sync, Checksum Calculator & Postgres Database Adapter
+- [x] **PRO-05:** Worker Engine, Dynamic Concurrency & Adaptive Backoff
+- [x] **PRO-06:** Typer CLI & Dry-Run / Diff Inspection Suite
+- [x] **PRO-07:** Containerization, Kubernetes Manifests & Pilot Run
 
 ---
 
