@@ -5,7 +5,7 @@ description = "Batch & Continuous Reindexing Engine for Paperless-ngx powered by
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
-    { name = "Gottfried Ganßauge", email = "ganssauge@gmx.de" },
+    { name = "Gottfried Ganßauge", email = "ganssauge@gorki120.de" },
 ]
 requires-python = ">=3.12"
 dependencies = [
