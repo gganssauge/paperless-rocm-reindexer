@@ -37,7 +37,10 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /usr/local/lib/python*/site-packages/setuptools* \
+           /usr/local/lib/python*/site-packages/pip* \
+           /usr/local/lib/python*/ensurepip
 
 # Create non-root system user and group
 RUN groupadd -g 10001 appgroup && \
