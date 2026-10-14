@@ -1,0 +1,200 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+    paths-ignore: &paths-ignore
+      - '**.md'
+      - 'docs/**'
+      - '.scratch/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.pre-commit-config.yaml'
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    branches:
+      - main
+    paths-ignore: *paths-ignore
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test-and-analyze:
+    name: Test & SonarCloud Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    outputs:
+      container_changed: ${{ steps.filter.outputs.container }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check for container-relevant changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            container:
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/ci.yml'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Install Python 3.12 & dependencies
+        run: |
+          uv python install 3.12
+          uv sync --dev
+
+      - name: Lint with Ruff
+        run: uv run ruff check .
+
+      - name: Check formatting with Ruff
+        run: uv run ruff format --check .
+
+      - name: Type checking
+        run: uv run ty check
+
+      - name: Run Pytest with Coverage
+        run: uv run pytest --cov=paperless_rocm_reindexer --cov-report=xml
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: SonarQube Quality Gate Check
+        uses: sonarsource/sonarqube-quality-gate-action@v1.2.1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Verify zero SonarCloud Issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          REPO="${{ github.repository }}"
+          echo "Checking SonarCloud annotations for commit: $COMMIT_SHA"
+
+          CHECK_RUN_ID=""
+          for i in {1..6}; do
+            CHECK_RUN_ID=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}/check-runs" --jq '.check_runs[] | select(.name=="SonarCloud Code Analysis") | .id' 2>/dev/null || true)
+            if [ -n "$CHECK_RUN_ID" ]; then
+              STATUS=$(gh api "repos/${REPO}/check-runs/${CHECK_RUN_ID}" --jq '.status' 2>/dev/null || true)
+              if [ "$STATUS" = "completed" ]; then
+                break
+              fi
+            fi
+            echo "Waiting for SonarCloud check-run to complete ($i/6)..."
+            sleep 5
+          done
+
+          if [ -z "$CHECK_RUN_ID" ]; then
+            echo "::warning::SonarCloud check-run not found or not completed."
+            exit 0
+          fi
+
+          ANNOTATIONS=$(gh api "repos/${REPO}/check-runs/${CHECK_RUN_ID}/annotations")
+          ISSUE_COUNT=$(echo "$ANNOTATIONS" | jq 'length')
+
+          if [ "$ISSUE_COUNT" -gt 0 ]; then
+            echo "::error::SonarCloud reported $ISSUE_COUNT issue(s)!"
+            echo "$ANNOTATIONS" | jq -r '.[] | "::error file=\(.path),line=\(.start_line)::[\(.path):\(.start_line)] SonarCloud [\(.annotation_level)]: \(.title)"'
+            exit 1
+          fi
+
+          echo "SonarCloud analysis clean: 0 issues found."
+
+  build-and-scan:
+    name: Docker Build, Trivy Scan & GHCR Push
+    needs: test-and-analyze
+    if: |
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && (needs.test-and-analyze.outputs.container_changed == 'true' || startsWith(github.ref, 'refs/tags/v'))) ||
+      (github.event_name == 'pull_request' && needs.test-and-analyze.outputs.container_changed == 'true') ||
+      (github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and load Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: |
+            paperless-rocm-reindexer:${{ github.sha }}
+            ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=paperless-rocm-reindexer
+          cache-to: type=gha,mode=max,scope=paperless-rocm-reindexer
+
+      - name: Enforce Trivy Quality Gate
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: paperless-rocm-reindexer:${{ github.sha }}
+          format: 'table'
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+
+      - name: Push Docker image to GHCR
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Pushing $tag..."
+            docker push "$tag"
+          done <<< "$TAGS"
