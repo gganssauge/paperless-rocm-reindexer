@@ -59,6 +59,8 @@ cover/
 
 # Development scratch
 .scratch/
+.env*
+test_output/
 
 # IDE & Editor settings
 .idea/
