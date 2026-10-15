@@ -59,6 +59,7 @@ cover/
 
 # Development scratch
 .scratch/
+.env*
 
 # IDE & Editor settings
 .idea/
