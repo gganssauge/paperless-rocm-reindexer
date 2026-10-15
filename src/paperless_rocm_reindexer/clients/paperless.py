@@ -24,7 +24,7 @@ class PaperlessClient:
         self.token = token
         headers = {
             "Authorization": f"Token {self.token}",
-            "Accept": "application/json; version=5",
+            "Accept": "application/json",
         }
         self._external_client = client is not None
         self._client = client or httpx.AsyncClient(
