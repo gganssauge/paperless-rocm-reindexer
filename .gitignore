@@ -54,13 +54,16 @@ cover/
 
 # Databases & local state
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
 # Development scratch
 .scratch/
 .env*
-test_output/
+test_output*/
+*.log
 
 # IDE & Editor settings
 .idea/
